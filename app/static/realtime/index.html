@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Realtime LLM → ElevenLabs TTS (Streaming)</title>
+  <style>
+    :root{--bg:#0b0f14;--panel:#121821;--muted:#8892a6;--text:#e6edf3;--brand:#5b9fff;--acc:#2dd4bf;--danger:#ef4444}
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,"Noto Sans","Helvetica Neue",Arial}
+    header{padding:20px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #1f2a3a;background:#0d141d}
+    header h1{margin:0;font-size:16px;font-weight:600}
+    .wrap{display:grid;grid-template-columns:360px 1fr;gap:16px;padding:16px}
+    .card{background:var(--panel);border:1px solid #1e2633;border-radius:14px;overflow:hidden}
+    .card h3{margin:0;padding:12px 14px;border-bottom:1px solid #1e2633;color:#b6c2d9;font-size:12px;letter-spacing:.04em;text-transform:uppercase}
+    .card .body{padding:14px}
+    label{display:block;margin:10px 0 6px;color:#c4cfde;font-weight:600;font-size:12px}
+    input, select, textarea{width:100%;padding:10px 12px;background:#0d141d;border:1px solid #1e2633;border-radius:10px;color:var(--text);outline:none}
+    textarea{min-height:120px;resize:vertical}
+    .row{display:flex;gap:10px}
+    .row > *{flex:1}
+    .btn{appearance:none;border:none;padding:10px 14px;border-radius:10px;background:var(--brand);color:#00122a;font-weight:700;cursor:pointer}
+    .btn.secondary{background:#1e293b;color:var(--text);border:1px solid #2b3a55}
+    .btn.ghost{background:transparent;border:1px dashed #334155;color:#93a2b8}
+    .btn.danger{background:var(--danger);color:#fff}
+    .btn:disabled{opacity:.5;cursor:not-allowed}
+    .muted{color:var(--muted)}
+    .log{background:#0d141d;border:1px solid #1e2633;border-radius:10px;padding:10px;height:140px;overflow:auto;white-space:pre-wrap}
+    .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#0d141d;border:1px solid #243041;color:#9fb0c8;font-size:12px}
+    audio{width:100%}
+    code{background:#0d141d;border:1px solid #1e2633;border-radius:6px;padding:1px 6px}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Realtime LLM → ElevenLabs TTS (StreamingResponse)</h1>
+    <div class="pill">Frontend Demo</div>
+  </header>
+
+  <div class="wrap">
+    <!-- Left: Controls -->
+    <section class="card">
+      <h3>Request Builder</h3>
+      <div class="body">
+        <label>Backend Base URL</label>
+        <input id="baseUrl" placeholder="http://localhost:8000" value="http://localhost:8000" />
+
+        <div class="row">
+          <div>
+            <label>Model</label>
+            <input id="model" value="gpt-4o-mini" />
+          </div>
+          <div>
+            <label>Temperature</label>
+            <input id="temperature" type="number" step="0.1" min="0" max="2" value="0.2" />
+          </div>
+        </div>
+
+        <label>Prompt</label>
+        <textarea id="prompt">Give me a two-sentence fun fact about the Moon, friendly tone.</textarea>
+
+        <div class="row">
+          <div>
+            <label>ElevenLabs Voice ID</label>
+            <input id="voiceId" value="JBFqnCBsd6RMkjVDRZzb" />
+          </div>
+          <div>
+            <label>TTS Model</label>
+            <input id="ttsModel" value="eleven_multilingual_v2" />
+          </div>
+        </div>
+
+        <div class="row">
+          <div>
+            <label>Output Format</label>
+            <select id="outputFormat">
+              <option>mp3_44100_128</option>
+              <option>mp3_22050_32</option>
+              <option>wav_44100</option>
+              <option>pcm_16000</option>
+            </select>
+          </div>
+          <div>
+            <label>Use MediaSource (progressive)</label>
+            <select id="useMSE">
+              <option value="auto" selected>auto</option>
+              <option value="true">true</option>
+              <option value="false">false</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:12px">
+          <button class="btn" id="btnSpeak">Stream Audio</button>
+          <button class="btn secondary" id="btnText">Text Only</button>
+          <button class="btn danger" id="btnAbort" disabled>Abort</button>
+        </div>
+
+        <p class="muted" style="margin-top:10px">Tip: Ensure CORS is enabled on your FastAPI backend for your frontend origin.</p>
+      </div>
+    </section>
+
+    <!-- Right: Output -->
+    <section class="card">
+      <h3>Output</h3>
+      <div class="body">
+        <label>Assistant Text (from x-agent-text header)</label>
+        <div id="textOut" class="log"></div>
+
+        <label style="margin-top:12px">Audio</label>
+        <audio id="player" controls></audio>
+
+        <div class="row" style="margin-top:12px">
+          <div class="pill"><span id="bytes">0</span> bytes</div>
+          <div class="pill">MSE: <span id="mseStatus">checking...</span></div>
+          <div class="pill">Content-Type: <span id="ctype">n/a</span></div>
+        </div>
+
+        <label style="margin-top:12px">Logs</label>
+        <div id="log" class="log"></div>
+      </div>
+    </section>
+  </div>
+
+<script>
+(function(){
+  const el = (id)=>document.getElementById(id);
+  const log = (...a)=>{ const t = el('log'); t.textContent += a.join(' ') + '\n'; t.scrollTop = t.scrollHeight; };
+  const set = (id, v)=>el(id).textContent = v;
+
+  const player = el('player');
+  const btnSpeak = el('btnSpeak');
+  const btnText  = el('btnText');
+  const btnAbort = el('btnAbort');
+
+  let controller = null; // AbortController
+
+  function buildPayload(){
+    const prompt = el('prompt').value.trim();
+    return {
+      model: el('model').value.trim() || 'gpt-4o-mini',
+      temperature: Number(el('temperature').value || 0.2),
+      messages: [ { role: 'user', content: prompt } ],
+      voice_id: el('voiceId').value.trim() || 'JBFqnCBsd6RMkjVDRZzb',
+      tts_model_id: el('ttsModel').value.trim() || 'eleven_multilingual_v2',
+      output_format: el('outputFormat').value
+    };
+  }
+
+  function mseSupported(){
+    try {
+      const ok = 'MediaSource' in window && MediaSource.isTypeSupported('audio/mpeg');
+      return ok;
+    } catch { return false; }
+  }
+
+  set('mseStatus', mseSupported() ? 'supported' : 'not supported');
+
+  async function textOnly(){
+    const base = el('baseUrl').value.replace(/\/$/, '');
+    const payload = buildPayload();
+    const url = base + '/v1/agent/chat';
+    controller = new AbortController();
+    btnAbort.disabled = false;
+    try{
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+      if(!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      el('textOut').textContent = data.reply || '';
+      log('TEXT OK', 'chars=', (data.reply||'').length);
+    }catch(err){
+      log('TEXT ERROR:', String(err));
+    }finally{
+      btnAbort.disabled = true;
+      controller = null;
+    }
+  }
+
+  async function streamAudio(){
+    const base = el('baseUrl').value.replace(/\/$/, '');
+    const payload = buildPayload();
+    const url = base + '/v1/agent/chat/stream-audio';
+    const wantMSE = (el('useMSE').value);
+    const useMSE = wantMSE === 'auto' ? mseSupported() : (wantMSE === 'true');
+
+    controller = new AbortController();
+    btnAbort.disabled = false;
+    set('bytes', 0);
+    el('textOut').textContent = '';
+    el('ctype').textContent = 'n/a';
+    player.pause(); player.removeAttribute('src'); player.load();
+
+    let res;
+    try{
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+      if(!res.ok) throw new Error(await res.text());
+
+      const ctype = res.headers.get('Content-Type') || res.headers.get('content-type') || 'unknown';
+      set('ctype', ctype);
+      const preview = res.headers.get('x-agent-text') || '';
+      const truncated = res.headers.get('x-text-truncated') === 'true';
+      el('textOut').textContent = preview + (truncated ? '\n\n[Text truncated for TTS]' : '');
+
+      if(useMSE && mseSupported()){
+        await streamWithMSE(res);
+      } else {
+        // Fallback: buffer to blob (not progressive)
+        log('MSE disabled or not supported – using blob fallback');
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        player.src = url; player.play();
+      }
+    }catch(err){
+      log('STREAM ERROR:', String(err));
+    }finally{
+      btnAbort.disabled = true;
+      controller = null;
+    }
+  }
+
+  async function streamWithMSE(res){
+    return new Promise(async (resolve, reject)=>{
+      const mediaSource = new MediaSource();
+      const objectUrl = URL.createObjectURL(mediaSource);
+      player.src = objectUrl;
+
+      let queue = [];
+      let appended = 0;
+      let aborted = false;
+
+      mediaSource.addEventListener('sourceopen', async ()=>{
+        let sb;
+        try{
+          sb = mediaSource.addSourceBuffer('audio/mpeg');
+        }catch(e){
+          log('SourceBuffer error:', e);
+          mediaSource.endOfStream();
+          URL.revokeObjectURL(objectUrl);
+          reject(e); return;
+        }
+
+        sb.addEventListener('updateend', ()=>{
+          if(queue.length){
+            const chunk = queue.shift();
+            try { sb.appendBuffer(chunk); } catch(e){ reject(e); }
+          } else if(aborted){
+            try { mediaSource.endOfStream(); } catch {}
+            resolve();
+          }
+        });
+
+        const reader = res.body.getReader();
+        player.play().catch(()=>{});
+
+        while(true){
+          const {done, value} = await reader.read();
+          if(done){
+            aborted = true;
+            if(!sb.updating && queue.length === 0){
+              try { mediaSource.endOfStream(); } catch {}
+              resolve();
+            }
+            break;
+          }
+          if(!(value instanceof Uint8Array)) continue;
+          appended += value.byteLength;
+          set('bytes', appended);
+          if(sb.updating || queue.length){
+            queue.push(value);
+          } else {
+            try { sb.appendBuffer(value); } catch(e){ reject(e); }
+          }
+        }
+      }, { once:true });
+    });
+  }
+
+  btnSpeak.addEventListener('click', (e)=>{ e.preventDefault(); streamAudio(); });
+  btnText.addEventListener('click', (e)=>{ e.preventDefault(); textOnly(); });
+  btnAbort.addEventListener('click', ()=>{
+    if(controller){ controller.abort(); log('Aborted by user'); }
+    btnAbort.disabled = true;
+  });
+})();
+</script>
+</body>
+</html>
