@@ -153,6 +153,17 @@
         }
     }
 
+    function handleUserSpeech() {
+        if (assistantState === 'speaking') {
+            stopAssistant();
+        }
+        if (assistantState !== 'listening') {
+            startRecording();
+        }
+        clearTimeout(silenceTimeout);
+        silenceTimeout = setTimeout(stopRecording, 1500);
+    }
+
     function detectVoice(dataArray) {
         analyser.getByteTimeDomainData(dataArray);
         let sum = 0;
@@ -162,14 +173,7 @@
         const volume = Math.sqrt(sum / dataArray.length);
 
         if (volume > 0.02) { // Speaking detected
-            if (assistantState === 'speaking') {
-                stopAssistant();
-            }
-            if (assistantState !== 'listening') {
-                startRecording();
-            }
-            clearTimeout(silenceTimeout);
-            silenceTimeout = setTimeout(stopRecording, 1500);
+            handleUserSpeech();
         }
         requestAnimationFrame(() => detectVoice(dataArray));
     }
